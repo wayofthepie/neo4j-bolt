@@ -1,0 +1,47 @@
+name:                neo4j-bolt
+version:             0.0.0.1
+synopsis:            Neo4j client using the bolt protocol
+description:         Please see README.md
+homepage:            https://github.com/wayofthepie/neo4j-bolt#readme
+license:             BSD3
+license-file:        LICENSE
+author:              Stephen O'Brien
+maintainer:          wayofthepie@gmail.com
+copyright:           2016 Stephen O'Brien
+category:            Web
+build-type:          Custom
+-- extra-source-files:
+cabal-version:       >=1.10
+
+flag liquidhaskell
+  description:             After building, verify with LiquidHaskell
+  default:                 True
+
+library
+  hs-source-dirs:      src
+  exposed-modules:     
+    Neo4j
+  build-depends:       
+    base >= 4.7 && < 5
+    , bytestring >= 0.10 && < 0.11
+    , cereal >= 0.5.2 && < 0.6
+    , liquidhaskell >= 0.6 && < 0.7
+    , liquidhaskell-cabal == 0.1.1.0
+    , network >= 2.6.0.0 && < 2.7
+    , safe >= 0.3 && < 0.4
+    , uri-bytestring >= 0.2.0 && < 0.3.0
+  default-language:    Haskell2010
+  x-liquidhaskell-options: --diff --no-termination
+
+test-suite neo4j-bolt-test
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:       base
+                     , neo4j-bolt
+  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+  default-language:    Haskell2010
+
+source-repository head
+  type:     git
+  location: https://github.com/githubuser/neo4j-bolt
