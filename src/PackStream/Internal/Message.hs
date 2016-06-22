@@ -149,12 +149,12 @@ consIntMsg i = consActualMsg i
  where
   consActualMsg ::Integer -> Message
   consActualMsg  i
-    | isTinyInt i = consTinyIntMsg i
-    | isInt8 i    = consInt8Msg i
-    | isInt16 i   = consInt16Msg i
-    | isInt32 i   = consInt32Msg i
-    | isInt64 i   = consInt64Msg i
-    | otherwise   = undefined
+    | isTinyInt i = consTinyIntMsg i -- -16 <= i <= 127
+    | isInt8 i    = consInt8Msg i  -- -128 <= i <= -17 
+    | isInt16 i   = consInt16Msg i -- -32768 <= i <= 32768
+    | isInt32 i   = consInt32Msg i -- -2147483648 <= i <= 2147483648
+    | isInt64 i   = consInt64Msg i -- -9223372036854775808 <= i <= 9223372036854775808
+    | otherwise   = undefined -- Not possible, checked with liquid haskell
 
 consTinyIntMsg :: Integer -> Message
 consTinyIntMsg i = Message
@@ -196,7 +196,7 @@ isTinyInt i = i >= (-16) && i <= 127
 -- >>> (isInt8 -18 == False) && (isInt8 -128 == True)
 -- True
 isInt8 :: Integer -> Bool
-isInt8 i = i >= (-17) && i <= (-128)
+isInt8 i = i >= (-128) && i <= (-17)
 
 -- >>> (isInt16 -32768 && isInt16 (7000) && not (isInt16 32769)
 -- True
