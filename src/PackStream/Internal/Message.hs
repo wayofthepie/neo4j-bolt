@@ -8,30 +8,29 @@
   Portability : non-portable
   Basic implementation of packstream message data types.
   @__Warning__@: This is a work in progress and is currently __very__ experimental.
+  
+  Packstream is a message serialization formatused in neo4j's bolt protocol.
+
 -}
 
 {-# LANGUAGE DeriveFunctor #-}
-module PackStream.Internal.Message (
-  -- * Message
-  Message(..)
-  , getMessageMarker
-  , getMessageSize
-  , getMessage
-  -- * Message Constructors
-  , consNullMsg
-  , consFloat64Msg
-  , consIntMsg
-  , consStringMsg
-  ) where
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies #-}
 
-import Control.Monad (foldM)
-import Data.Bits ((.|.))
-import qualified Data.ByteString as B 
+module PackStream.Internal.Message where
+
+import Control.Monad (guard, unless)
 import qualified Data.ByteString.Char8 as C
+import Data.Int
+import qualified Data.Map as M
+import Data.Serialize
 import Data.Serialize.Put
+import Data.Serialize.Get
 import Data.Serialize.IEEE754
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
 import Data.Word
 import Debug.Trace
 
@@ -45,207 +44,111 @@ import Prelude hiding (head, tail)
 
 {-@ head   :: {v:[a] | (NonNull v)} -> a @-}
 head (x:_) = x
-head []    = error "Can never happen."
+head []    = impossible "Can never happen."
 
 {-@ tail :: {v:[a] | (NonNull v)} -> [a] @-}
 tail (_:xs) = xs
-tail []     = error "Can never happen."
+tail []     = impossible "Can never happen."
+
+{-@ impossible :: {v:String | false} -> a  @-}
+impossible msg = error msg
 
 
--- | A @__'Message'__@ encapsulates the __marker__ byte(s), __size__ byte(s) and
--- actual __message__ bytes in a packstream type.
-data Message = Message
-  { messageMarker :: Maybe C.ByteString
-  , messageSize   :: Maybe C.ByteString
-  , message       :: Maybe C.ByteString
-  } deriving (Eq, Show)
+-- | PackStream types.
+data PSType = 
+  PSNull 
+  | PSBool    Bool
+  | PSInt8    Int8 
+  | PSInt16   Int16 
+  | PSInt32   Int32 
+  | PSInt64   Int64 
+  | PSFloat   Double
+  | PSText    T.Text
+  | PSList    [PSType] 
+  | PSMap     (M.Map T.Text PSType)
+  | PSStruct  Signature [PSType] 
 
-getMessageMarker = messageMarker
-getMessageSize   = messageSize
-getMessage       = message
-
-
---------------------------------------------------------------------------------
--- $
--- >>> consNullMsg
--- Message {messageMarker = Just "\NUL\NUL\NUL\192", messageSize = Nothing, message = Nothing}
-
--- | Construct a @__'Message'__@ corresponding to a packstream __Null__
--- type.
-consNullMsg :: Message
-consNullMsg = Message (Just $ runPut (putWord32be 0xC0)) Nothing Nothing
+-- | A byte which represents the type of a PackStream Structure.
+newtype Signature = Signature { signature :: Word8 } deriving (Eq, Show)
 
 --------------------------------------------------------------------------------
--- $
--- >>> consFloat64Msg 1.2
--- Message {messageMarker = Just "\NUL\NUL\NUL\193", messageSize = Nothing, message = Just "?\243\&333333"}
+-- Marker bytes
 
--- | Construct a @__'Message'__@ corresponding to a packstream __Float__ type.
-consFloat64Msg :: Double -> Message
-consFloat64Msg msg = Message
-  (Just $ runPut (putWord32be 0xC1))
-  Nothing
-  (Just $ runPut (putFloat64be msg))
+-- | A marker byte contains information on the data type as well as direct 
+-- or indirect size information.
+newtype MarkerByte = MarkerByte { marker :: Word8 } deriving (Eq, Show)
 
+instance Serialize MarkerByte where
+  put = putWord8 . marker
+  get = getWord8 >>= pure . MarkerByte 
 
 --------------------------------------------------------------------------------
-consStringMsg :: T.Text -> Either T.Text Message
-consStringMsg s = consStringMsg' s (fromIntegral $ T.length s) 
-
-consStringMsg' :: T.Text -> Word8 -> Either T.Text Message
-consStringMsg' str size
-  | size < 0x10  = Right (consTinyStrMsg tinyStringInit size str) -- < 16
-  | size <=0xff  = Right (consStr8Msg str8Init size str) -- < 256
-  | otherwise = Left (T.pack "Error")
- where
-  consTinyStrMsg :: Word8 -> Word8 -> T.Text -> Message
-  consTinyStrMsg initBytes size str = Message
-    (Just . word8ToBs $ (initBytes .|. size))
-    Nothing
-    (Just . runPut $ word8sToBin (B.unpack $ (T.encodeUtf8 str)))
-
-  consStr8Msg :: Word8 -> Word8 -> T.Text -> Message
-  consStr8Msg initBytes size str = Message
-    (Just . word8ToBs $ initBytes)
-    (Just $ word8ToBs size)
-    (Just . runPut $ putByteString (T.encodeUtf8 str))
-
-word8ToBs :: Word8 -> C.ByteString
-word8ToBs = runPut . putWord8
-
-word8sToBin :: [Word8] -> Put
-word8sToBin []  = putWord8 0x00
-word8sToBin strAsW8 = word8sToBin' (tail strAsW8) (putWord8 $ head strAsW8)
-
-
-word8sToBin' :: [Word8] -> Put -> Put
-word8sToBin' [] acc     = acc
-word8sToBin' (x:xs) acc = word8sToBin' xs (acc <* putWord8 x) 
 
 --------------------------------------------------------------------------------
--- Integer types
+-- Pack and Unpack
 
--- $
--- >>> import Data.Maybe (fromJust)
--- >>> let msg = consIntMsg 0
--- >>> messageMarker msg == Nothing
--- True
--- >>> messageSize msg == Nothing
--- True
--- >>> fromJust (message msg) == runPut (putWord8 0x00)
--- True
+mkNullByte = MarkerByte 0xC0
+mkFloat64Byte = MarkerByte 0xC1
+mkInt8Byte = MarkerByte 0xC8
+mkInt16Byte = MarkerByte 0xC9
+mkInt32Byte = MarkerByte 0xCA
+mkInt64Byte = MarkerByte 0xCB
 
--- | Construct a @__'Message'__@ corresponding to a packstream __TINY_INT__, which
--- is of size between -2^4 and +2^7.
---
--- Note that this currently does not support encoding in any value, i.e. an int
--- between -16 and 127 __must__ be a __TINY_INT__ event though packstream supports
--- a wider encoding.
---
---
-{-@ consIntMsg :: ConstrainedInteger -> Message @-}
-consIntMsg :: Integer -> Message
-consIntMsg i = consActualMsg i
- where
-  consActualMsg ::Integer -> Message
-  consActualMsg  i
-    | isTinyInt i = consTinyIntMsg i -- -16 <= i <= 127
-    | isInt8 i    = consInt8Msg i  -- -128 <= i <= -17 
-    | isInt16 i   = consInt16Msg i -- -32768 <= i <= 32768
-    | isInt32 i   = consInt32Msg i -- -2147483648 <= i <= 2147483648
-    | isInt64 i   = consInt64Msg i -- -9223372036854775808 <= i <= 9223372036854775808
-    | otherwise   = undefined -- Not possible, checked with liquid haskell
 
-consTinyIntMsg :: Integer -> Message
-consTinyIntMsg i = Message
-  Nothing
-  Nothing
-  (Just $ runPut (putWord8 (fromIntegral i)))
+-- | Checks whether the marker byte @__'marker'__@ exists, if it does not we
+-- fail parsing with the given message.
+hasMarker :: (Eq a, Serialize a) => a -> Get ()
+hasMarker marker = get >>= \got -> unless (marker == got) (fail "Incorrect marker.")
 
-consInt8Msg :: Integer -> Message
-consInt8Msg i = Message
-  (Just $ runPut (putWord8 int8init))
-  Nothing
-  (Just $ runPut (putWord8 (fromIntegral i)))
+packNull :: Put 
+packNull = put mkNullByte
 
-consInt16Msg :: Integer -> Message
-consInt16Msg i = Message
-  (Just $ runPut (putWord8 int16init))
-  Nothing
-  (Just $ runPut (putWord16be (fromIntegral i)))
+unpackNull :: Get ()
+unpackNull = label "Unpacking Null." $ hasMarker mkNullByte 
 
-consInt32Msg :: Integer -> Message
-consInt32Msg i = Message
-  (Just $ runPut (putWord8 int32init))
-  Nothing
-  (Just $ runPut (putWord32be (fromIntegral i)))
+packFloat64 :: Double -> Put
+packFloat64 d = put mkFloat64Byte *> putFloat64be d
 
--- >>> :t message (consInt64Msg int64Max)
--- Just Word64
-consInt64Msg :: Integer -> Message
-consInt64Msg i = Message
-  (Just $ runPut (putWord8 int64init))
-  Nothing
-  (Just $ runPut (putWord64be (fromIntegral i)))
+unpackFloat64 :: Get Double
+unpackFloat64 = label "Unpacking Float64" $ hasMarker mkFloat64Byte *> getFloat64be 
 
--- >>> (isTinyInt 127 == True) && (isTinyInt 128 == False)
--- True
-isTinyInt :: Integer -> Bool
-isTinyInt i = i >= (-16) && i <= 127
+{-$integers
+  Packstream deals with integers of sizes 8, 16, 32 and 64 bytes. Each type is 
+  represented differently in the protocol. Integer values occupy either 1, 2, 3,
+  5 or 9 bytes.
 
--- >>> (isInt8 -18 == False) && (isInt8 -128 == True)
--- True
-isInt8 :: Integer -> Bool
-isInt8 i = i >= (-128) && i <= (-17)
+  The types of integers are TinyInt, Int8, Int16, Int32 and Int64.
 
--- >>> (isInt16 -32768 && isInt16 (7000) && not (isInt16 32769)
--- True
-isInt16 :: Integer -> Bool
-isInt16 i = i >= (-32768) && i <= 32768
-
-isInt32 :: Integer -> Bool
-isInt32 i = i >= (-int32Max) && i <= int32Max
-
--- | Is @__i__@ in the range of a packstream 64-bit Int type.
---
-isInt64 :: Integer -> Bool
-isInt64 i = (-int64Max) <= i && i <= int64Max
-
-int32Max = 2147483648
-
-int64Max = 9223372036854775808
-
--- Initialization bytes
-int8init = 0xC8
-int16init = 0xC9
-int32init = 0xCA
-int64init = 0xCB
-tinyStringInit = 0x80
-str8Init = 0xD0
-
-{-
-let MAX_CHUNK_SIZE = 16383,
-TINY_STRING = 0x80,
-TINY_LIST = 0x90,
-TINY_MAP = 0xA0,
-TINY_STRUCT = 0xB0,
-NULL = 0xC0,
-FLOAT_64 = 0xC1,
-FALSE = 0xC2,
-TRUE = 0xC3,
-INT_8 = 0xC8,
-INT_16 = 0xC9,
-INT_32 = 0xCA,
-INT_64 = 0xCB,
-STRING_8 = 0xD0,
-STRING_16 = 0xD1,
-STRING_32 = 0xD2,
-LIST_8 = 0xD4,
-LIST_16 = 0xD5,
-LIST_32 = 0xD6,
-MAP_8 = 0xD8,
-MAP_16 = 0xD9,
-MAP_32 = 0xDA,
-STRUCT_8 = 0xDC,
-STRUCT_16 = 0xDD;
 -}
+
+packIntX :: (Integral a, Num b) => a -> MarkerByte -> Putter b -> Put
+packIntX i mk putter = put mk *> putter (fromIntegral i)
+
+unpackIntX :: (Integral a, Integral b) => String -> MarkerByte -> Get a -> Get b
+unpackIntX lbl mk getter = label lbl $ hasMarker mk *> (fmap fromIntegral getter)
+
+packInt8 :: Int8 -> Put
+packInt8 i = packIntX i mkInt8Byte putWord8
+
+unpackInt8 :: Get Int8
+unpackInt8 = unpackIntX "Unpacking Int8" mkInt8Byte getWord8
+
+packInt16 :: Int16 -> Put
+packInt16 i = packIntX i mkInt16Byte putWord16be
+
+unpackInt16 :: Get Int16
+unpackInt16 = unpackIntX "Unpacking Int16" mkInt16Byte getWord16be
+
+packInt32 :: Int32 -> Put
+packInt32 i = packIntX i mkInt32Byte putWord32be
+
+unpackInt32 :: Get Int32
+unpackInt32 = unpackIntX "Unpacking Int32" mkInt32Byte getWord32be
+
+packInt64 :: Int64 -> Put
+packInt64 i = packIntX i mkInt64Byte putWord64be
+
+unpackInt64 :: Get Int64
+unpackInt64 = unpackIntX "Unpacking Int64" mkInt64Byte getWord64be
+
+--------------------------------------------------------------------------------

@@ -13,20 +13,16 @@ import Network.Socket hiding (send, sendTo, recv, recvFrom)
 import Network.Socket.ByteString
 import Safe
 
+import PackStream.Internal.Message
+
 import Prelude hiding (head, init, tail)
 
-{-@ predicate NonNull X = ((len X) > 0) @-}
 {-@ type Port = { p:Int | p > 0 && p <= 65535 } @-}
 
-{-@ head   :: {v:[a] | (NonNull v)} -> a @-}
-head (x:_) = x
-head []    = nope "Can never happen."
 
-{-@ tail :: {v:[a] | (NonNull v)} -> [a] @-}
-tail (_:xs) = xs
-tail []     = nope "Can never happen."
+{-@ impossible :: {v:String | false} -> a  @-}
+impossible msg = error msg
 
-nope = error
 
 -- | Must be sent in the handshake before version negotiation.
 magicPreamble :: Word32
