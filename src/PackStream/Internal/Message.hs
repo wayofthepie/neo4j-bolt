@@ -20,7 +20,29 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module PackStream.Internal.Message where
+module PackStream.Internal.Message (
+  -- * Null
+  packNull
+  , unpackNull
+
+  , MarkerByte(..)
+  , hasMarker
+
+  -- * Float64
+  , packFloat64
+  , unpackFloat64
+
+  -- * Integer
+  -- $integer
+  , packInt8
+  , packInt16
+  , packInt32
+  , packInt64
+  , unpackInt8
+  , unpackInt16
+  , unpackInt32
+  , unpackInt64
+  ) where
 
 import Control.Monad (guard, unless)
 import qualified Data.ByteString.Char8 as C
@@ -39,20 +61,6 @@ import Prelude hiding (head, tail)
 --------------------------------------------------------------------------------
 -- Refinement for packstream __Int64__ constraints.
 {-@ type ConstrainedInteger = { i:Integer | i >= (-9223372036854775808) && i <= 9223372036854775808 } @-}
-
-{-@ predicate NonNull X = ((len X) > 0) @-}
-
-{-@ head   :: {v:[a] | (NonNull v)} -> a @-}
-head (x:_) = x
-head []    = impossible "Can never happen."
-
-{-@ tail :: {v:[a] | (NonNull v)} -> [a] @-}
-tail (_:xs) = xs
-tail []     = impossible "Can never happen."
-
-{-@ impossible :: {v:String | false} -> a  @-}
-impossible msg = error msg
-
 
 -- | PackStream types.
 data PSType = 
@@ -94,7 +102,6 @@ mkInt16Byte = MarkerByte 0xC9
 mkInt32Byte = MarkerByte 0xCA
 mkInt64Byte = MarkerByte 0xCB
 
-
 -- | Checks whether the marker byte @__'marker'__@ exists, if it does not we
 -- fail parsing with the given message.
 hasMarker :: (Eq a, Serialize a) => a -> Get ()
@@ -112,15 +119,12 @@ packFloat64 d = put mkFloat64Byte *> putFloat64be d
 unpackFloat64 :: Get Double
 unpackFloat64 = label "Unpacking Float64" $ hasMarker mkFloat64Byte *> getFloat64be 
 
-{-$integers
-  Packstream deals with integers of sizes 8, 16, 32 and 64 bytes. Each type is 
+{- $integer
+  Packstream deals with integers of sizes 8, 16, 32 and 64 bytes. Each type is
   represented differently in the protocol. Integer values occupy either 1, 2, 3,
   5 or 9 bytes.
-
   The types of integers are TinyInt, Int8, Int16, Int32 and Int64.
-
 -}
-
 packIntX :: (Integral a, Num b) => a -> MarkerByte -> Putter b -> Put
 packIntX i mk putter = put mk *> putter (fromIntegral i)
 

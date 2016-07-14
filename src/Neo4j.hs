@@ -19,6 +19,15 @@ import Prelude hiding (head, init, tail)
 
 {-@ type Port = { p:Int | p > 0 && p <= 65535 } @-}
 
+{-@ predicate NonNull X = ((len X) > 0) @-}
+
+{-@ head   :: {v:[a] | (NonNull v)} -> a @-}
+head (x:_) = x
+head []    = impossible "Can never happen."
+
+{-@ tail :: {v:[a] | (NonNull v)} -> [a] @-}
+tail (_:xs) = xs
+tail []     = impossible "Can never happen."
 
 {-@ impossible :: {v:String | false} -> a  @-}
 impossible msg = error msg
