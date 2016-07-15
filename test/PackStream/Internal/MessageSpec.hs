@@ -3,12 +3,14 @@ module PackStream.Internal.MessageSpec where
 
 import Control.Monad (guard, unless)
 import qualified Data.ByteString as B
+import Data.Char (chr)
 import Data.Either.Combinators (fromRight')
 import Data.Int
 import Data.List (foldl')
 import Data.Maybe (fromJust)
 import qualified Data.Serialize as S
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T (encodeUtf8)
 import Data.Word
 
 import Test.Tasty
@@ -117,6 +119,36 @@ intTypeTest (IntTypeTest packlbl unpacklbl val initByte putter packer unpacker) 
     S.runGet unpacker intBs `shouldBe` Right val
 
 
+-- Text
+{-
+tinyTextMarker = 0x80
+initTinyText :: B.ByteString
+initTinyText = B.singleton tinyTextMarker
+
+data AllowedText = AllowedText 
+  { atVal :: T.Text
+  } 
+
+instance Arbitrary AllowedText where
+  arbitrary = do  
+      txt <- genText
+      let bytes = T.encodeUtf8 txt
+      let expected =       return $ AllowedText txt expected
+
+verifyText txt = 
+  let bytes = T.encodeUtf8 txt
+  in  case B.length bytes of
+        size | size == 0 -> Nothing
+        size | size <= 15 -> (Just verifyTinyText, Nothing)
 
 
+verifyEmptyText :: Word8 -> Bool
+verifyEmptyText w8 = w8 == tinyTextMarker
 
+verifyTinyText :: Word8 -> Bool
+verifyTinyText w8 = w8 == tinyTextMarker
+
+genText :: Gen T.Text
+genText = T.pack <$> listOf1 (chr <$> choose (1,126))
+
+-}
