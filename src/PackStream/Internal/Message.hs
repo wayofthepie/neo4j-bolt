@@ -47,6 +47,11 @@ module PackStream.Internal.Message (
 
   -- * Text
   -- $text
+  , packText
+  
+  -- * Boolean
+  -- $boolean
+  , packBoolean
   ) where
 
 import Control.Monad (guard, unless)
@@ -203,28 +208,43 @@ mkText32 = MarkerByte 0xD2
 -- | Packs @__'Text'__@ values of sizes /__0__/ to /__2^32__/ bytes. Sizes
 -- larger than /__2^32__/ bytes will return @__'Nothing'__@.
 --
--- FIXME: Size can likely be checked at compile time with liquid haskell.
-packText :: T.Text -> Maybe Put 
+-- FIXME: Size bounds can likely be checked at compile time with liquid haskell.
+packText :: T.Text -> Put 
 packText text 
-  | T.null text = Just (put mkTinyText) 
-  | otherwise = let textBytes = T.encodeUtf8 text in
-    case B.length textBytes of
-      size | size <= 15 -> Just $ putWord8 (initTinyText .|. (fromIntegral size)) 
-      
-      size | size <= 255 -> 
-        Just $ put mkText8 
-                *> putWord8 (fromIntegral size) 
-                *> putByteString textBytes
-      
-      size | size <= 65535 -> 
-        Just $ put mkText16 
-                *> putWord16be (fromIntegral size)
-                *> putByteString textBytes
+  | T.null text = put mkTinyText 
+  | otherwise = case B.length textBytes of
+      size | size <= 15 -> buildTinyText size
+      size | size <= 255 -> putTextX mkText8 putWord8 size
+      size | size <= 65535 -> putTextX mkText16 putWord16be size
+      size | size <= 4294967295 ->  putTextX mkText32 putWord32be size 
+      _ -> error "Size too large!" -- FIXME : Liquid haskell check or either!!
+ where
+  textBytes :: B.ByteString
+  textBytes = T.encodeUtf8 text
+  
+  buildTinyText :: Int -> Put
+  buildTinyText size = putWord8 (tinyTextInitByte size) *> putByteString textBytes
+  
+  tinyTextInitByte :: Int -> Word8
+  tinyTextInitByte size = initTinyText .|. (fromIntegral size)
 
-      size | size <= 4294967295 -> 
-        Just $ put mkText32 
-                *> putWord32be (fromIntegral size)
-                *> putByteString textBytes
+  putTextX :: Num a => MarkerByte -> Putter a -> Int -> Put
+  putTextX mb putter size = 
+    put mb *> putter (fromIntegral size) *> putByteString textBytes
 
 
---------------------------------------------------------------------------------
+{- $boolean
+  Boolean values are encoded with a single byte marker.
+
+  [@0xC3@] Denotes @__'True'__@.
+  [@0xC4@] Denotes @__'False'__@.
+
+-}
+boolTrue = MarkerByte 0xC3
+boolFalse = MarkerByte 0xC4
+
+-- | Packs a @__'Bool'__@ - /__0xC3__/ denotes @__'True'__@ and /__0xC4__/
+-- denotes /__'False'__/.
+packBoolean :: Bool -> Put
+packBoolean b | b = put boolTrue
+              | otherwise = put boolFalse

@@ -12,7 +12,6 @@ import Data.Word
 import Network.Socket hiding (send, sendTo, recv, recvFrom)
 import Network.Socket.ByteString
 import Safe
-
 import PackStream.Internal.Message
 
 import Prelude hiding (head, init, tail)

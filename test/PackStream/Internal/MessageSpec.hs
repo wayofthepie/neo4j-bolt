@@ -2,6 +2,7 @@
 module PackStream.Internal.MessageSpec where
 
 import Control.Monad (guard, unless)
+import Data.Bits
 import qualified Data.ByteString as B
 import Data.Char (chr)
 import Data.Either.Combinators (fromRight')
@@ -16,7 +17,7 @@ import Data.Word
 import Test.Tasty
 import Test.Tasty.Hspec
 import Test.Tasty.HUnit
-import Test.Tasty.QuickCheck as QC
+import Test.Tasty.QuickCheck as QC hiding ((.&.))
 
 import PackStream.Internal.Message
 
@@ -43,7 +44,7 @@ int64Init = B.singleton 0xCB
 
 spec :: Spec
 spec = do
-  hasMarkerSpec *> intSpec *> nullSpec *> floatSpec
+  hasMarkerSpec *> intSpec *> nullSpec *> floatSpec *> textSpec
 
 hasMarkerSpec = do 
   describe "hasMarker" $ do
@@ -118,37 +119,104 @@ intTypeTest (IntTypeTest packlbl unpacklbl val initByte putter packer unpacker) 
   it unpacklbl $ do
     S.runGet unpacker intBs `shouldBe` Right val
 
-
--- Text
-{-
+--------------------------------------------------------------------------------
+-- Text tests.
 tinyTextMarker = 0x80
+text8Marker = 0xD0
+text16Marker = 0xD1
+text32Marker = 0xD2
+
 initTinyText :: B.ByteString
 initTinyText = B.singleton tinyTextMarker
 
-data AllowedText = AllowedText 
-  { atVal :: T.Text
-  } 
+data TextDataExpect = TextDataExpect
+  { tdeMarker :: Word8
+  , tdeSize   :: Maybe Int
+  , tdeBytes  :: Maybe B.ByteString
+  } deriving (Eq, Show)
 
-instance Arbitrary AllowedText where
+data TextData = TextData
+  { tdVal :: T.Text
+  , tdExpect :: TextDataExpect
+  } deriving (Eq, Show)
+
+instance Arbitrary TextData where
   arbitrary = do  
       txt <- genText
-      let bytes = T.encodeUtf8 txt
-      let expected =       return $ AllowedText txt expected
-
-verifyText txt = 
-  let bytes = T.encodeUtf8 txt
-  in  case B.length bytes of
-        size | size == 0 -> Nothing
-        size | size <= 15 -> (Just verifyTinyText, Nothing)
-
-
-verifyEmptyText :: Word8 -> Bool
-verifyEmptyText w8 = w8 == tinyTextMarker
-
-verifyTinyText :: Word8 -> Bool
-verifyTinyText w8 = w8 == tinyTextMarker
+      pure $ TextData txt (expectedText txt)
 
 genText :: Gen T.Text
 genText = T.pack <$> listOf1 (chr <$> choose (1,126))
 
--}
+
+-- Takes Text data and returns what shoud be expected when packing that Text
+-- data.
+expectedText :: T.Text -> TextDataExpect 
+expectedText txt = 
+  if T.null txt then 
+    TextDataExpect tinyTextMarker Nothing Nothing
+  else let bytes = T.encodeUtf8 txt
+  in  case B.length bytes of
+    size | size <= 15 -> 
+      TextDataExpect tinyTextMarker (Just size) (Just bytes)
+    size | size <= 255 -> 
+      TextDataExpect text8Marker (Just size) (Just bytes)
+    size | size <= 65535 -> 
+      TextDataExpect text16Marker (Just size) (Just bytes)
+    size | size <= 4294967295 -> 
+      TextDataExpect text32Marker (Just size) (Just bytes)
+
+
+-- Encoding a Text should give the correct marker byte corresponding to the
+-- encoded Text's size.
+prop_packingTextGivesCorrectMarkerByte :: TextData -> Bool
+prop_packingTextGivesCorrectMarkerByte (TextData txt (TextDataExpect expectedMarker expectedSize _))  
+  | T.null txt = initByte == expectedMarker
+  | fromJust expectedSize <= 15 = extractMarker initByte == expectedMarker  
+  | otherwise = initByte == expectedMarker
+ where
+  generatedBytes :: B.ByteString
+  generatedBytes = S.runPut (packText txt)
+  
+  (initByte, remainder) = fromJust (B.uncons generatedBytes)
+
+
+-- Encoding Text data should give the correct size value.
+prop_packingTextGivesCorrectSize :: TextData -> Bool
+prop_packingTextGivesCorrectSize (TextData txt (TextDataExpect _ maybeExpectedSize _))  
+  | T.null txt = Nothing == maybeExpectedSize -- Always True, there is no size.
+  | expectedSize <= 15 = lowNibble initByte == expectedSize
+  | otherwise = size == expectedSize
+ where
+  generatedBytes :: B.ByteString
+  generatedBytes = S.runPut (packText txt)
+  
+  expectedSize          = fromIntegral (fromJust maybeExpectedSize)
+  (initByte, remainder) = fromJust (B.uncons generatedBytes)
+  (size, _)             = fromJust (B.uncons remainder)
+
+
+-- Extract the higher order nibble from the given byte.
+-- If the byte is 0x89 (10001001) then extract the four bits 1000.
+highNibble :: Word8 -> Word8
+highNibble byte = byte `shiftR` 4
+
+
+-- Extract the lower order nibble from the given byte.
+-- If the byte is 0x89 (10001001) then extract the four bits 1001.
+lowNibble :: Word8 -> Word8
+lowNibble byte = byte .&. 0x0F
+
+
+-- Extract a marker byte from a byte encoded with a marker and a size.
+extractMarker :: Word8 -> Word8
+extractMarker byte = (highNibble byte) `shiftL` 4 
+
+
+-- Test specification for Text.
+textSpec = do
+  describe "packText" $ do
+    it "packing text gives the correct marker corresponding to its size byte" 
+      (property prop_packingTextGivesCorrectMarkerByte)
+    it "packing text gives the correct size" (property prop_packingTextGivesCorrectSize)
+
