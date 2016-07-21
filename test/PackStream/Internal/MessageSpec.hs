@@ -167,6 +167,23 @@ expectedText txt =
       TextDataExpect text32Marker (Just size) (Just bytes)
 
 
+-- Extract the higher order nibble from the given byte.
+-- If the byte is 0x89 (10001001) then extract the four bits 1000.
+highNibble :: Word8 -> Word8
+highNibble byte = byte `shiftR` 4
+
+
+-- Extract the lower order nibble from the given byte.
+-- If the byte is 0x89 (10001001) then extract the four bits 1001.
+lowNibble :: Word8 -> Word8
+lowNibble byte = byte .&. 0x0F
+
+
+-- Extract a marker byte from a byte encoded with a marker and a size.
+extractMarker :: Word8 -> Word8
+extractMarker byte = (highNibble byte) `shiftL` 4 
+
+
 -- Encoding a Text should give the correct marker byte corresponding to the
 -- encoded Text's size.
 prop_packingTextGivesCorrectMarkerByte :: TextData -> Bool
@@ -196,22 +213,8 @@ prop_packingTextGivesCorrectSize (TextData txt (TextDataExpect _ maybeExpectedSi
   (size, _)             = fromJust (B.uncons remainder)
 
 
--- Extract the higher order nibble from the given byte.
--- If the byte is 0x89 (10001001) then extract the four bits 1000.
-highNibble :: Word8 -> Word8
-highNibble byte = byte `shiftR` 4
-
-
--- Extract the lower order nibble from the given byte.
--- If the byte is 0x89 (10001001) then extract the four bits 1001.
-lowNibble :: Word8 -> Word8
-lowNibble byte = byte .&. 0x0F
-
-
--- Extract a marker byte from a byte encoded with a marker and a size.
-extractMarker :: Word8 -> Word8
-extractMarker byte = (highNibble byte) `shiftL` 4 
-
+prop_packAndUnpackAreIsomorphic (TextData txt _) = 
+  S.runGet unpackText (S.runPut (packText txt)) == Right txt
 
 -- Test specification for Text.
 textSpec = do
@@ -219,4 +222,5 @@ textSpec = do
     it "packing text gives the correct marker corresponding to its size byte" 
       (property prop_packingTextGivesCorrectMarkerByte)
     it "packing text gives the correct size" (property prop_packingTextGivesCorrectSize)
+    it "packText and unpackText are isomorphic" (property prop_packAndUnpackAreIsomorphic) 
 

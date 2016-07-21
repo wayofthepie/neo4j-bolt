@@ -17,6 +17,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
@@ -48,7 +49,8 @@ module PackStream.Internal.Message (
   -- * Text
   -- $text
   , packText
-  
+  , unpackText  
+
   -- * Boolean
   -- $boolean
   , packBoolean
@@ -59,12 +61,13 @@ import Data.Bits
 import qualified Data.ByteString as B
 import Data.Int
 import qualified Data.Map as M
+import Data.Maybe (maybe)
 import Data.Serialize
 import Data.Serialize.Put
 import Data.Serialize.Get
 import Data.Serialize.IEEE754
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as T (encodeUtf8)
+import qualified Data.Text.Encoding as T (decodeUtf8, encodeUtf8)
 import Data.Word
 import Debug.Trace
 
@@ -231,6 +234,33 @@ packText text
   putTextX :: Num a => MarkerByte -> Putter a -> Int -> Put
   putTextX mb putter size = 
     put mb *> putter (fromIntegral size) *> putByteString textBytes
+
+
+-- | Unpacks @__'Text'__@ values.
+unpackText :: Get T.Text
+unpackText = label "Unpacking Text" $ do
+  maybeSize <- hasTextMarker 
+  maybe (T.decodeUtf8 <$> (size >>= getByteString))
+        ((fmap T.decodeUtf8) . getByteString . fromIntegral)
+        maybeSize
+ where
+  size :: Get Int
+  size = fromIntegral <$> getWord8
+
+hasTextMarker :: Get (Maybe Word8)
+hasTextMarker = get >>= \got -> do
+  let (isText, maybeSize) = isTextMarker got
+  unless isText (fail "Incorrect marker.") *> pure maybeSize
+
+-- Whether the marker byte is a Text marker.
+isTextMarker :: MarkerByte -> (Bool, Maybe Word8)
+isTextMarker markerByte@(MarkerByte byte) 
+  | byte `shiftR` 4 == 0x08 = (True, Just tinyIntSize)
+  | otherwise = ((markerByte == mkText8) 
+    || (markerByte == mkText16) 
+    || (markerByte == mkText32), Nothing)
+ where
+  tinyIntSize = byte `shiftL` 4 `shiftR` 4
 
 
 {- $boolean
