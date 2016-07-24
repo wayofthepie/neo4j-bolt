@@ -224,3 +224,6 @@ textSpec = do
     it "packing text gives the correct size" (property prop_packingTextGivesCorrectSize)
     it "packText and unpackText are isomorphic" (property prop_packAndUnpackAreIsomorphic) 
 
+-- | Boolean
+
+
